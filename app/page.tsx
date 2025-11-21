@@ -44,12 +44,11 @@ const formatTime = (minutesFromStart: number) => {
 export default function SamSpecterGame() {
   const [isMobile, setIsMobile] = useState<boolean | null>(null);
 
-  // --- NEW GAME STATE (Cleaned) ---
-  const [time, setTime] = useState(0); // Minutes passed
-  const [focus, setFocus] = useState(100); // Hidden stat (0-100)
+  // --- GAME STATE ---
+  const [time, setTime] = useState(0);
+  const [focus, setFocus] = useState(100);
   const [currentCardId, setCurrentCardId] = useState<string>("start");
 
-  // The profile we build up during the game
   const [culpritProfile, setCulpritProfile] = useState<CulpritProfile>({
     violent: 0,
     organized: 0,
@@ -58,7 +57,7 @@ export default function SamSpecterGame() {
     insideJob: 0,
   });
 
-  // Bias tracking (unused in UI currently, but tracked)
+  // Bias tracking
   const [suspicion, setSuspicion] = useState<Record<string, number>>({});
 
   const [gameOver, setGameOver] = useState(false);
@@ -107,7 +106,6 @@ export default function SamSpecterGame() {
     x.set(0);
   };
 
-  // THE ARREST LOGIC
   const handleArrest = () => {
     if (!selectedSuspectId) return;
 
@@ -115,8 +113,6 @@ export default function SamSpecterGame() {
     const suspect = SUSPECTS.find((s) => s.id === selectedSuspectId);
     if (!suspect) return;
 
-    // 1. Determine "True Killer" by finding the suspect whose traits
-    //    are closest to the accumulated culpritProfile.
     let bestMatch = SUSPECTS[0];
     let lowestDiff = Infinity;
 
@@ -136,7 +132,6 @@ export default function SamSpecterGame() {
 
     setGameOver(true);
 
-    // 2. Compare Player Choice vs Calculated True Killer
     if (bestMatch.id === suspect.id) {
       setGameResult(
         `SUCCESS. The evidence aligns perfectly. ${suspect.name} confesses during the interrogation. The profile you built matches their MO exactly.`
@@ -158,11 +153,9 @@ export default function SamSpecterGame() {
   const handleChoice = (direction: "left" | "right") => {
     if (!currentCard) return;
 
-    // 1. Apply Scene Base Costs first (if any)
     let newTime = time + (currentCard.timeCost || 0);
     let newFocus = focus + (currentCard.focusDelta || 0);
 
-    // Apply base profile/suspicion deltas from scene
     let newProfile = { ...culpritProfile };
     if (currentCard.culpritProfileDelta) {
       (
@@ -175,10 +168,7 @@ export default function SamSpecterGame() {
       });
     }
 
-    // 2. Apply Choice Specific Effects
     const choice = currentCard[direction];
-
-    // Capture effect to avoid TS undefined error
     const effect = choice.effect;
 
     if (effect) {
@@ -195,12 +185,10 @@ export default function SamSpecterGame() {
       }
     }
 
-    // Update State
     setTime(newTime);
     setFocus(newFocus);
     setCulpritProfile(newProfile);
 
-    // 3. Navigation
     if (STORY[choice.nextId]) {
       setCurrentCardId(choice.nextId);
       x.set(0);
@@ -229,9 +217,11 @@ export default function SamSpecterGame() {
   if (!isMobile) return null;
 
   return (
-    <div className="h-screen w-full bg-zinc-950 text-zinc-300 flex flex-col font-serif overflow-hidden selection:bg-zinc-700">
-      {/* TOP BAR: Time & Location (No Money/Energy) */}
-      <div className="flex justify-between items-center p-4 bg-black/50 border-b border-zinc-800 text-xs font-mono tracking-wider h-[60px] shrink-0">
+    // FIXED: h-[100dvh] ensures it respects the mobile URL bar.
+    // FIXED: fixed inset-0 locks it to the viewport to prevent scrolling.
+    <div className="fixed inset-0 h-[100dvh] w-full bg-zinc-950 text-zinc-300 flex flex-col font-serif overflow-hidden selection:bg-zinc-700 overscroll-none">
+      {/* TOP BAR */}
+      <div className="flex justify-between items-center p-4 bg-black/50 border-b border-zinc-800 text-xs font-mono tracking-wider h-[60px] shrink-0 z-20">
         <div className="flex items-center gap-2 text-zinc-400">
           <Clock size={16} />
           <span className="font-bold text-lg text-zinc-200">
@@ -245,7 +235,8 @@ export default function SamSpecterGame() {
       </div>
 
       {/* MAIN AREA */}
-      <div className="flex-1 relative flex flex-col items-center justify-center p-4">
+      {/* FIXED: min-h-0 allows this section to shrink if the screen is small, preventing overflow */}
+      <div className="flex-1 min-h-0 relative flex flex-col items-center justify-center p-4 z-10">
         {feedback && (
           <div className="absolute top-4 z-50 bg-zinc-800 text-zinc-200 px-4 py-2 rounded border border-zinc-600 animate-bounce font-mono text-xs">
             {feedback}
@@ -314,13 +305,14 @@ export default function SamSpecterGame() {
             </button>
           </div>
         ) : (
-          <div className="relative w-full h-full max-h-[600px] flex items-center justify-center">
+          <div className="relative w-full h-full flex items-center justify-center">
+            {/* CARD: Removed max-h restriction, using aspect-ratio + flex fitting */}
             <motion.div
               style={{ x, rotate }}
               drag={isTyping || showSuspects ? false : "x"}
               dragConstraints={{ left: 0, right: 0 }}
               onDragEnd={handleDragEnd}
-              className={`absolute w-full max-w-sm aspect-[3/5] bg-[#f4f1ea] text-zinc-900 p-6 shadow-[0_5px_25px_rgba(0,0,0,0.5)] flex flex-col justify-between border-2 border-zinc-800 ${
+              className={`absolute w-full max-w-sm aspect-[3/5] max-h-full bg-[#f4f1ea] text-zinc-900 p-6 shadow-[0_5px_25px_rgba(0,0,0,0.5)] flex flex-col justify-between border-2 border-zinc-800 ${
                 isTyping ? "cursor-wait" : "cursor-grab active:cursor-grabbing"
               } touch-none relative overflow-hidden rounded-sm`}
             >
@@ -380,8 +372,8 @@ export default function SamSpecterGame() {
         )}
       </div>
 
-      {/* BOTTOM ACTIONS: Only Suspects Button */}
-      <div className="h-[80px] shrink-0 bg-black/80 border-t border-zinc-800 flex items-center justify-center px-6 pb-safe font-mono z-50">
+      {/* BOTTOM ACTIONS: Fixed height, shrink-0 to prevent crushing */}
+      <div className="h-[80px] shrink-0 bg-black/80 border-t border-zinc-800 flex items-center justify-center px-6 pb-safe font-mono z-20">
         <button
           onClick={() => setShowSuspects(true)}
           disabled={gameOver || isTyping}
