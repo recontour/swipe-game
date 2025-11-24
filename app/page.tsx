@@ -1,392 +1,412 @@
-"use client";
+import React, { useState, useEffect, useRef } from "react";
+import {
+  Fingerprint,
+  Heart,
+  Landmark,
+  Compass,
+  Smartphone,
+} from "lucide-react";
+import { Genre, StorySegment, HistoryItem } from "./types";
+import { startNewStory, continueStory } from "./services/geminiService";
+import { Typewriter } from "./components/Typewriter";
+import { LoadingSpinner } from "./components/LoadingSpinner";
 
-import React, { useState, useEffect } from "react";
-import { motion, useMotionValue, useTransform, PanInfo } from "framer-motion";
-import { Clock, Smartphone, Users, MapPin } from "lucide-react";
-import { STORY, SUSPECTS, CulpritProfile } from "./storyData";
-
-// --- HELPERS ---
-
-const useTypewriter = (text: string, speed = 30) => {
-  const [displayText, setDisplayText] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
-
-  useEffect(() => {
-    let i = 0;
-    setDisplayText("");
-    setIsTyping(true);
-    const timer = setInterval(() => {
-      if (i < text.length) {
-        setDisplayText(text.slice(0, i + 1));
-        i++;
-      } else {
-        clearInterval(timer);
-        setIsTyping(false);
-      }
-    }, speed);
-    return () => clearInterval(timer);
-  }, [text, speed]);
-
-  return { displayText, isTyping };
+// Loading messages configuration
+const LOADING_MESSAGES: Record<string, string[]> = {
+  [Genre.DETECTIVE]: [
+    "Connecting the clues...",
+    "The shadows are shifting...",
+    "Deducing the truth...",
+    "The suspect is hesitating...",
+    "Lighting a cigarette...",
+    "Checking the files...",
+  ],
+  [Genre.ROMANCE]: [
+    "A heart skips a beat...",
+    "Catching a stolen glance...",
+    "Sealing the letter...",
+    "Tension fills the air...",
+    "A gentle touch...",
+    "Whispering secrets...",
+  ],
+  [Genre.HISTORICAL]: [
+    "Dipping quill in ink...",
+    "Turning the dusty page...",
+    "The ink is drying...",
+    "Consulting the archives...",
+    "History is being written...",
+    "The candle flickers...",
+  ],
+  [Genre.ADVENTURE]: [
+    "Charting the path ahead...",
+    "Unfolding the map...",
+    "Destiny is calling...",
+    "The horizon is expanding...",
+    "Checking the compass...",
+    "Sharpening the blade...",
+  ],
 };
 
-const formatTime = (minutesFromStart: number) => {
-  const startHour = 18; // 6:00 PM
-  const totalMinutes = startHour * 60 + minutesFromStart;
-  const hours = Math.floor(totalMinutes / 60) % 24;
-  const mins = totalMinutes % 60;
-  const ampm = hours >= 12 ? "PM" : "AM";
-  const displayHour = hours > 12 ? hours - 12 : hours === 0 ? 12 : hours;
-  const displayMins = mins < 10 ? `0${mins}` : mins;
-  return `${displayHour}:${displayMins} ${ampm}`;
-};
+const App: React.FC = () => {
+  // --- State Initialization with LocalStorage ---
+  const getSavedState = () => {
+    try {
+      const saved = localStorage.getItem("raconteur_state");
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      console.error("Failed to parse saved state", e);
+      return null;
+    }
+  };
 
-export default function SamSpecterGame() {
-  const [isMobile, setIsMobile] = useState<boolean | null>(null);
+  const savedState = getSavedState();
 
-  // --- GAME STATE ---
-  const [time, setTime] = useState(0);
-  const [focus, setFocus] = useState(100);
-  const [currentCardId, setCurrentCardId] = useState<string>("start");
-
-  const [culpritProfile, setCulpritProfile] = useState<CulpritProfile>({
-    violent: 0,
-    organized: 0,
-    personalMotive: 0,
-    financialMotive: 0,
-    insideJob: 0,
-  });
-
-  // Bias tracking
-  const [suspicion, setSuspicion] = useState<Record<string, number>>({});
-
-  const [gameOver, setGameOver] = useState(false);
-  const [gameResult, setGameResult] = useState("");
-  const [feedback, setFeedback] = useState<string | null>(null);
-
-  // Modal State
-  const [showSuspects, setShowSuspects] = useState(false);
-  const [selectedSuspectId, setSelectedSuspectId] = useState<string | null>(
-    null
+  const [isMobile, setIsMobile] = useState(true);
+  const [genre, setGenre] = useState<Genre | null>(savedState?.genre || null);
+  const [storyTitle, setStoryTitle] = useState<string | null>(
+    savedState?.storyTitle || null
   );
+  const [story, setStory] = useState<StorySegment | null>(
+    savedState?.story || null
+  );
+  const [history, setHistory] = useState<HistoryItem[]>(
+    savedState?.history || []
+  );
+  const [loading, setLoading] = useState(false);
+  const [loadingText, setLoadingText] = useState("Loading...");
+  // If restoring a story, start in typing mode to ensure UI consistency
+  const [isTyping, setIsTyping] = useState(!!savedState?.story);
+  const [error, setError] = useState<string | null>(null);
 
-  const currentCard = STORY[currentCardId];
-  const { displayText, isTyping } = useTypewriter(currentCard?.text || "", 20);
+  const contentEndRef = useRef<HTMLDivElement>(null);
 
-  // --- ANIMATION ---
-  const x = useMotionValue(0);
-  const rotate = useTransform(x, [-200, 200], [-3, 3]);
-  const opacityRight = useTransform(x, [0, 100], [0, 1]);
-  const opacityLeft = useTransform(x, [0, -100], [0, 1]);
+  // --- Effects ---
 
+  // Save state to LocalStorage
   useEffect(() => {
-    const checkScreenSize = () => setIsMobile(window.innerWidth <= 768);
-    checkScreenSize();
-    window.addEventListener("resize", checkScreenSize);
-    return () => window.removeEventListener("resize", checkScreenSize);
+    if (genre && story && !loading) {
+      localStorage.setItem(
+        "raconteur_state",
+        JSON.stringify({
+          genre,
+          storyTitle,
+          story,
+          history,
+        })
+      );
+    }
+  }, [genre, storyTitle, story, history, loading]);
+
+  // Mobile Guard Check
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth <= 768);
+    };
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
-  // --- LOGIC ---
+  // Scroll to bottom when content changes
+  useEffect(() => {
+    if (contentEndRef.current) {
+      contentEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [story, loading]);
 
-  const resetGame = () => {
-    setTime(0);
-    setFocus(100);
-    setCulpritProfile({
-      violent: 0,
-      organized: 0,
-      personalMotive: 0,
-      financialMotive: 0,
-      insideJob: 0,
-    });
-    setSuspicion({});
-    setCurrentCardId("start");
-    setGameOver(false);
-    setShowSuspects(false);
-    setSelectedSuspectId(null);
-    x.set(0);
+  // Dynamic Loading Text Logic
+  useEffect(() => {
+    let interval: number;
+
+    if (loading && genre) {
+      const messages =
+        LOADING_MESSAGES[genre] || LOADING_MESSAGES[Genre.ADVENTURE];
+
+      const pickRandom = () =>
+        messages[Math.floor(Math.random() * messages.length)];
+
+      // Set initial message
+      setLoadingText(pickRandom());
+
+      // Cycle message every 2 seconds
+      interval = window.setInterval(() => {
+        setLoadingText(pickRandom());
+      }, 2000);
+    }
+
+    return () => clearInterval(interval);
+  }, [loading, genre]);
+
+  // --- Handlers ---
+
+  const handleGenreSelect = async (selectedGenre: Genre) => {
+    setGenre(selectedGenre);
+    setLoading(true);
+    setError(null);
+    try {
+      const initialStory = await startNewStory(selectedGenre);
+      setStory(initialStory);
+      setStoryTitle(initialStory.storyTitle || selectedGenre);
+      setHistory([{ role: "model", text: initialStory.storyText }]);
+      setIsTyping(true);
+    } catch (err) {
+      setError("Unable to start the story. Please try again.");
+      console.error(err);
+      setGenre(null); // Go back
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleArrest = () => {
-    if (!selectedSuspectId) return;
+  const handleChoice = async (choiceText: string) => {
+    if (!genre || !story) return;
 
-    setShowSuspects(false);
-    const suspect = SUSPECTS.find((s) => s.id === selectedSuspectId);
-    if (!suspect) return;
+    // 1. Update UI immediately to show loading
+    setLoading(true);
+    setIsTyping(true); // Reset typing for next segment
+    setError(null);
 
-    let bestMatch = SUSPECTS[0];
-    let lowestDiff = Infinity;
+    // 2. Add user choice to history
+    const updatedHistory = [
+      ...history,
+      { role: "user", text: choiceText } as HistoryItem,
+    ];
+    setHistory(updatedHistory);
 
-    SUSPECTS.forEach((s) => {
-      const diff =
-        Math.abs(s.traits.violent - culpritProfile.violent) +
-        Math.abs(s.traits.organized - culpritProfile.organized) +
-        Math.abs(s.traits.personalMotive - culpritProfile.personalMotive) +
-        Math.abs(s.traits.financialMotive - culpritProfile.financialMotive) +
-        Math.abs(s.traits.insideJob - culpritProfile.insideJob);
-
-      if (diff < lowestDiff) {
-        lowestDiff = diff;
-        bestMatch = s;
-      }
-    });
-
-    setGameOver(true);
-
-    if (bestMatch.id === suspect.id) {
-      setGameResult(
-        `SUCCESS. The evidence aligns perfectly. ${suspect.name} confesses during the interrogation. The profile you built matches their MO exactly.`
+    try {
+      // 3. Fetch next segment
+      const nextSegment = await continueStory(
+        genre,
+        updatedHistory,
+        choiceText
       );
-    } else {
-      setGameResult(
-        `FAILURE. You arrested ${suspect.name}, but the charges didn't stick. Weeks later, evidence surfaced implicating ${bestMatch.name}, but they had already fled the country.`
-      );
+
+      // 4. Update Story State
+      setStory(nextSegment);
+      setHistory((prev) => [
+        ...prev,
+        { role: "model", text: nextSegment.storyText },
+      ]);
+    } catch (err) {
+      setError("Connection lost. Please try again.");
+      console.error(err);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleDragEnd = (event: any, info: PanInfo) => {
-    if (isTyping) return;
-    const threshold = 100;
-    if (info.offset.x > threshold) handleChoice("right");
-    else if (info.offset.x < -threshold) handleChoice("left");
+  const handleTypingComplete = () => {
+    setIsTyping(false);
   };
 
-  const handleChoice = (direction: "left" | "right") => {
-    if (!currentCard) return;
-
-    let newTime = time + (currentCard.timeCost || 0);
-    let newFocus = focus + (currentCard.focusDelta || 0);
-
-    let newProfile = { ...culpritProfile };
-    if (currentCard.culpritProfileDelta) {
-      (
-        Object.keys(currentCard.culpritProfileDelta) as Array<
-          keyof CulpritProfile
-        >
-      ).forEach((key) => {
-        newProfile[key] =
-          (newProfile[key] || 0) + (currentCard.culpritProfileDelta![key] || 0);
-      });
-    }
-
-    const choice = currentCard[direction];
-    const effect = choice.effect;
-
-    if (effect) {
-      newTime += effect.timeCost || 0;
-      newFocus += effect.focusDelta || 0;
-
-      if (effect.culpritProfileDelta) {
-        (
-          Object.keys(effect.culpritProfileDelta) as Array<keyof CulpritProfile>
-        ).forEach((key) => {
-          newProfile[key] =
-            (newProfile[key] || 0) + (effect.culpritProfileDelta![key] || 0);
-        });
-      }
-    }
-
-    setTime(newTime);
-    setFocus(newFocus);
-    setCulpritProfile(newProfile);
-
-    if (STORY[choice.nextId]) {
-      setCurrentCardId(choice.nextId);
-      x.set(0);
-    } else {
-      setGameResult("Error: End of branch reached.");
-      setGameOver(true);
-    }
+  const resetStory = () => {
+    localStorage.removeItem("raconteur_state");
+    setGenre(null);
+    setStoryTitle(null);
+    setStory(null);
+    setHistory([]);
+    setError(null);
   };
 
-  // --- RENDER ---
+  // --- Render Helpers ---
 
-  if (!isMobile && isMobile !== null) {
+  if (!isMobile) {
     return (
-      <div className="h-screen bg-zinc-950 text-gray-400 flex items-center justify-center p-4 font-mono">
-        <div className="text-center max-w-md border border-zinc-800 p-8 rounded">
-          <Smartphone className="mx-auto mb-4" size={32} />
-          <h1 className="text-xl font-bold text-zinc-200 mb-2 uppercase">
-            Mobile Terminal
+      // FIX: Viewport Lock
+      <div className="fixed inset-0 h-[100dvh] w-screen flex items-center justify-center bg-blue-50 text-slate-900 p-8 font-sans overflow-hidden overscroll-none">
+        <div className="text-center max-w-md bg-white rounded-2xl shadow-xl p-12 border border-blue-100">
+          <Smartphone className="w-16 h-16 mx-auto mb-6 text-blue-500" />
+          <h1 className="text-2xl font-bold mb-4 text-blue-900">
+            Mobile Experience Only
           </h1>
-          <p className="text-sm">Please use a phone.</p>
+          <p className="text-slate-600 leading-relaxed">
+            This experience is designed specifically for mobile devices. Please
+            open this on your phone.
+          </p>
         </div>
       </div>
     );
   }
 
-  if (!isMobile) return null;
+  // Genre Selection Screen
+  if (!story && !loading && !genre) {
+    return (
+      // FIX: Viewport Lock
+      <div className="fixed inset-0 h-[100dvh] w-full flex flex-col bg-blue-50 relative overflow-hidden font-sans overscroll-none">
+        {/* Header */}
+        <header className="z-10 pt-12 pb-6 px-6 text-center bg-white shadow-sm border-b border-blue-100">
+          <h1 className="text-3xl font-bold text-blue-600 tracking-tight mb-2">
+            Hi, I am Raconteur.
+          </h1>
+          <p className="text-sm font-medium text-slate-500 tracking-wide">
+            Here to tell you a story. What would intrigue you?
+          </p>
+        </header>
 
-  return (
-    // FIXED: h-[100dvh] ensures it respects the mobile URL bar.
-    // FIXED: fixed inset-0 locks it to the viewport to prevent scrolling.
-    <div className="fixed inset-0 h-[100dvh] w-full bg-zinc-950 text-zinc-300 flex flex-col font-serif overflow-hidden selection:bg-zinc-700 overscroll-none">
-      {/* TOP BAR */}
-      <div className="flex justify-between items-center p-4 bg-black/50 border-b border-zinc-800 text-xs font-mono tracking-wider h-[60px] shrink-0 z-20">
-        <div className="flex items-center gap-2 text-zinc-400">
-          <Clock size={16} />
-          <span className="font-bold text-lg text-zinc-200">
-            {formatTime(time)}
-          </span>
-        </div>
-        <div className="flex items-center gap-2 text-zinc-500">
-          <MapPin size={14} />
-          <span className="uppercase">Sector 4</span>
-        </div>
-      </div>
-
-      {/* MAIN AREA */}
-      {/* FIXED: min-h-0 allows this section to shrink if the screen is small, preventing overflow */}
-      <div className="flex-1 min-h-0 relative flex flex-col items-center justify-center p-4 z-10">
-        {feedback && (
-          <div className="absolute top-4 z-50 bg-zinc-800 text-zinc-200 px-4 py-2 rounded border border-zinc-600 animate-bounce font-mono text-xs">
-            {feedback}
-          </div>
-        )}
-
-        {/* SUSPECT / ARREST MODAL */}
-        {showSuspects && !gameOver && (
-          <div className="absolute inset-0 z-40 bg-black/95 flex flex-col p-6 animate-fade-in">
-            <h2 className="text-xl font-mono font-bold text-red-500 mb-6 tracking-widest uppercase border-b border-red-900 pb-2 text-center">
-              Suspect Database
-            </h2>
-
-            <div className="flex-1 space-y-3 overflow-y-auto">
-              {SUSPECTS.map((suspect) => (
-                <button
-                  key={suspect.id}
-                  onClick={() => setSelectedSuspectId(suspect.id)}
-                  className={`w-full p-4 border text-left transition flex justify-between items-center ${
-                    selectedSuspectId === suspect.id
-                      ? "bg-red-900/20 border-red-500 text-red-100"
-                      : "bg-zinc-900 border-zinc-700 text-zinc-400"
-                  }`}
-                >
-                  <span className="font-bold uppercase tracking-wider">
-                    {suspect.name}
-                  </span>
-                  {selectedSuspectId === suspect.id && (
-                    <div className="h-2 w-2 bg-red-500 rounded-full animate-pulse" />
-                  )}
-                </button>
-              ))}
+        {/* Grid - FIX: Reduced Padding (p-4) & Gap (gap-3) */}
+        <div className="z-10 flex-1 overflow-y-auto p-4 grid grid-cols-1 gap-3">
+          <button
+            onClick={() => handleGenreSelect(Genre.DETECTIVE)}
+            // FIX: Reduced Padding (p-4)
+            className="group relative p-4 bg-white rounded-xl border border-blue-100 shadow-sm active:scale-[0.98] transition-all hover:shadow-md hover:border-blue-300"
+          >
+            {/* FIX: Reduced Margin (mb-1) */}
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-bold text-lg text-slate-900">
+                {Genre.DETECTIVE}
+              </span>
+              {/* FIX: Reduced Icon (w-5) */}
+              <Fingerprint className="w-5 h-5 text-blue-600" />
             </div>
-
-            <div className="mt-6 flex gap-4">
-              <button
-                onClick={() => setShowSuspects(false)}
-                className="flex-1 py-4 text-zinc-500 text-xs underline uppercase tracking-widest"
-              >
-                Cancel
-              </button>
-              <button
-                disabled={!selectedSuspectId}
-                onClick={handleArrest}
-                className="flex-[2] bg-red-600 disabled:bg-zinc-800 text-white font-bold uppercase tracking-widest py-4 rounded disabled:text-zinc-600"
-              >
-                Arrest
-              </button>
-            </div>
-          </div>
-        )}
-
-        {gameOver ? (
-          <div className="w-full max-w-xs text-center bg-[#f4f1ea] p-8 rounded shadow-2xl text-zinc-900 border-2 border-zinc-800">
-            <h2 className="text-2xl font-bold mb-4 uppercase tracking-widest border-b-2 border-zinc-900 pb-2">
-              Final Report
-            </h2>
-            <p className="mb-8 text-sm font-medium leading-relaxed font-mono text-left">
-              {gameResult}
+            <p className="text-left text-sm text-slate-600 leading-tight">
+              Rain-slicked streets, smokey offices, and a case that doesn't add
+              up.
             </p>
-            <button
-              onClick={resetGame}
-              className="w-full bg-zinc-900 text-[#f4f1ea] font-bold py-4 rounded hover:bg-zinc-800 transition uppercase tracking-widest text-sm"
-            >
-              Archive Case
-            </button>
-          </div>
-        ) : (
-          <div className="relative w-full h-full flex items-center justify-center">
-            {/* CARD: Removed max-h restriction, using aspect-ratio + flex fitting */}
-            <motion.div
-              style={{ x, rotate }}
-              drag={isTyping || showSuspects ? false : "x"}
-              dragConstraints={{ left: 0, right: 0 }}
-              onDragEnd={handleDragEnd}
-              className={`absolute w-full max-w-sm aspect-[3/5] max-h-full bg-[#f4f1ea] text-zinc-900 p-6 shadow-[0_5px_25px_rgba(0,0,0,0.5)] flex flex-col justify-between border-2 border-zinc-800 ${
-                isTyping ? "cursor-wait" : "cursor-grab active:cursor-grabbing"
-              } touch-none relative overflow-hidden rounded-sm`}
-            >
-              {/* Overlay Colors */}
-              <motion.div
-                style={{ opacity: opacityRight }}
-                className="absolute inset-0 bg-blue-900/90 flex items-center justify-center z-20 pointer-events-none"
-              >
-                <span className="text-white font-black font-mono text-xl text-center rotate-3 border-4 border-white p-4 rounded uppercase tracking-widest leading-tight mx-8">
-                  {currentCard.right.text}
-                </span>
-              </motion.div>
-              <motion.div
-                style={{ opacity: opacityLeft }}
-                className="absolute inset-0 bg-red-900/90 flex items-center justify-center z-20 pointer-events-none"
-              >
-                <span className="text-white font-black font-mono text-xl text-center -rotate-3 border-4 border-white p-4 rounded uppercase tracking-widest leading-tight mx-8">
-                  {currentCard.left.text}
-                </span>
-              </motion.div>
+          </button>
 
-              {/* Watermark Image (Faint Background) */}
-              <div className="absolute inset-0 flex items-center justify-center z-0 pointer-events-none opacity-5 overflow-hidden">
-                <span className="text-[200px] grayscale transform rotate-12 select-none">
-                  {currentCard.image}
-                </span>
-              </div>
+          <button
+            onClick={() => handleGenreSelect(Genre.ADVENTURE)}
+            className="group relative p-4 bg-white rounded-xl border border-blue-100 shadow-sm active:scale-[0.98] transition-all hover:shadow-md hover:border-blue-300"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-bold text-lg text-slate-900">
+                {Genre.ADVENTURE}
+              </span>
+              <Compass className="w-5 h-5 text-blue-600" />
+            </div>
+            <p className="text-left text-sm text-slate-600 leading-tight">
+              Lost temples, treacherous jungles, and the hunt for glory.
+            </p>
+          </button>
 
-              {/* Story Text */}
-              <div className="flex-1 mt-2 select-none pointer-events-none overflow-hidden z-10 relative">
-                <p className="text-base leading-relaxed font-medium font-serif text-left">
-                  {displayText}
-                  <span className="animate-pulse font-light ml-1">|</span>
-                </p>
-              </div>
+          <button
+            onClick={() => handleGenreSelect(Genre.ROMANCE)}
+            className="group relative p-4 bg-white rounded-xl border border-blue-100 shadow-sm active:scale-[0.98] transition-all hover:shadow-md hover:border-blue-300"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-bold text-lg text-slate-900">
+                {Genre.ROMANCE}
+              </span>
+              <Heart className="w-5 h-5 text-blue-600" />
+            </div>
+            <p className="text-left text-sm text-slate-600 leading-tight">
+              Stolen glances, grand ballrooms, and scandals whispered behind
+              fans.
+            </p>
+          </button>
 
-              {/* Bottom Options */}
-              <div
-                className={`flex justify-between items-end text-[10px] font-bold uppercase tracking-widest mt-4 font-mono transition-opacity duration-500 ${
-                  isTyping ? "opacity-0" : "opacity-100"
-                }`}
-              >
-                <div className="flex flex-col max-w-[45%] text-left">
-                  <span className="text-red-800 border-b border-red-300/50 pb-1 leading-tight">
-                    ← {currentCard.left.text}
-                  </span>
-                </div>
+          <button
+            onClick={() => handleGenreSelect(Genre.HISTORICAL)}
+            className="group relative p-4 bg-white rounded-xl border border-blue-100 shadow-sm active:scale-[0.98] transition-all hover:shadow-md hover:border-blue-300"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-bold text-lg text-slate-900">
+                {Genre.HISTORICAL}
+              </span>
+              <Landmark className="w-5 h-5 text-blue-600" />
+            </div>
+            <p className="text-left text-sm text-slate-600 leading-tight">
+              Witness the turning tides of history through the eyes of the
+              forgotten.
+            </p>
+          </button>
 
-                <div className="flex flex-col max-w-[45%] text-right">
-                  <span className="text-blue-800 border-b border-blue-300/50 pb-1 leading-tight">
-                    {currentCard.right.text} →
-                  </span>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
+          {error && (
+            <div className="p-4 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm text-center mt-4">
+              {error}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Initial Loading Screen (Between Genres)
+  if (loading && !story) {
+    return (
+      // FIX: Viewport Lock
+      <div className="fixed inset-0 h-[100dvh] w-full bg-blue-50 flex flex-col items-center justify-center font-sans overscroll-none">
+        <LoadingSpinner genre={genre} />
+        <p className="mt-6 text-blue-500 font-medium italic animate-pulse text-lg">
+          {loadingText}
+        </p>
+      </div>
+    );
+  }
+
+  // Story Screen
+  return (
+    // FIX: Viewport Lock
+    <div className="fixed inset-0 h-[100dvh] w-full flex flex-col bg-blue-50 relative overflow-hidden font-sans overscroll-none">
+      {/* Top: Fixed Titles */}
+      <div className="z-10 flex-none px-6 py-2 bg-white/90 backdrop-blur-md border-b border-blue-100 shadow-sm">
+        <div className="flex flex-col items-center relative py-2">
+          <button
+            onClick={resetStory}
+            className="absolute right-0 top-0 text-[10px] font-semibold text-blue-400 uppercase tracking-wider hover:text-blue-600"
+          >
+            Quit
+          </button>
+
+          {/* Story Name - FIX: Matched to Welcome Page Style (text-3xl font-bold text-blue-600) */}
+          <h1 className="text-3xl font-bold text-blue-600 tracking-tight leading-tight mb-1">
+            {storyTitle || genre}
+          </h1>
+
+          {/* Chapter Title Below - Subtle */}
+          <h2 className="text-sm font-normal text-slate-400 uppercase tracking-widest">
+            {story?.chapterTitle || "Loading..."}
+          </h2>
+        </div>
       </div>
 
-      {/* BOTTOM ACTIONS: Fixed height, shrink-0 to prevent crushing */}
-      <div className="h-[80px] shrink-0 bg-black/80 border-t border-zinc-800 flex items-center justify-center px-6 pb-safe font-mono z-20">
-        <button
-          onClick={() => setShowSuspects(true)}
-          disabled={gameOver || isTyping}
-          className="group flex flex-col items-center justify-center text-zinc-500 hover:text-red-500 transition disabled:opacity-30 active:scale-95"
-        >
-          <div className="bg-zinc-900 p-3 rounded-full mb-2 border border-zinc-800 group-hover:border-red-500/50 transition-colors shadow-lg">
-            <Users size={20} />
+      {/* Middle: Scrollable Story Text */}
+      <div className="z-0 flex-1 overflow-y-auto px-6 py-6 pb-40 scroll-smooth">
+        {loading ? (
+          <div className="mt-12 flex flex-col items-center justify-center space-y-6">
+            <LoadingSpinner genre={genre} />
+            <p className="text-xl italic text-blue-400 font-medium animate-pulse text-center leading-relaxed">
+              {loadingText}
+            </p>
           </div>
-          <span className="text-[10px] font-bold tracking-widest">
-            OPEN SUSPECT DB
-          </span>
-        </button>
+        ) : story ? (
+          <div className="max-w-prose mx-auto">
+            <Typewriter
+              text={story.storyText}
+              onComplete={handleTypingComplete}
+              speed={50}
+            />
+          </div>
+        ) : null}
+        <div ref={contentEndRef} />
       </div>
+
+      {/* Bottom: Fixed Choices */}
+      {!loading && (
+        <div className="z-20 absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-blue-50 via-blue-50/95 to-transparent pt-12">
+          {/* Increased duration for slower appearance (2000ms), added ease-out */}
+          <div
+            className={`space-y-3 transition-opacity duration-[2000ms] ease-out ${
+              isTyping
+                ? "opacity-0 pointer-events-none"
+                : "opacity-100 pointer-events-auto"
+            }`}
+          >
+            {/* Render Choices - Square with rounded edges */}
+            {story?.choices?.map((choice, idx) => (
+              <button
+                key={idx}
+                onClick={() => handleChoice(choice.text)}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-4 px-6 rounded-xl text-sm md:text-base leading-snug shadow-lg shadow-blue-200 active:scale-[0.98] transition-all transform"
+              >
+                {choice.text}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
-}
+};
+
+export default App;
